@@ -1,0 +1,22 @@
+asyncpg>=0.30.0
+python-dotenv>=0.9.9
+fastapi>=0.115.13
+openai>=1.91.0
+pandas>=2.3.0
+pdfplumber>=0.11.7
+pydantic>=2.11.7
+python-multipart>=0.0.20
+requests>=2.32.4
+uvicorn[standard]>=0.34.3
+aiohttp>=3.9.0
+# New AI Agent Dependencies
+beautifulsoup4>=4.12.0
+numpy>=1.24.0
+motor>=3.3.0  # For async MongoDB operations
+psutil>=5.9.0  # For system monitoring
+lxml>=4.9.0    # For advanced web scraping
+twilio>=7.0.0  # For WhatsApp notifications via Twilio
+weaviate-client>=4.5.0  # For vector database operations
+PyMuPDF>=1.23.0  # For PDF processing
+pdf2image>=1.16.3  # For PDF to image conversion
+pytesseract>=0.3.10  # For OCR
