@@ -119,30 +119,28 @@ def hybrid_search_for_topic(topic: str, document_id: str = None, limit: int = 5)
         logger.info(f"[DEBUG] Entered hybrid_search_for_topic for topic: {topic}, document_id: {document_id}, limit: {limit}")
         client_weaviate = get_weaviate_client()
         logger.info(f"[DEBUG] Weaviate client obtained. Checking if collection exists...")
-        
         # Check if collection exists
         if not client_weaviate.collections.exists("SimplifiedChunk"):
             logger.error("SimplifiedChunk collection does not exist")
             return []
         logger.info(f"[DEBUG] Collection exists. Preparing query...")
-        
-        # Use hybrid search with text-embedding-3-small
-        query = {
-            "hybrid": {
-                "query": topic,
-                "alpha": 0.3
-            },
-            "limit": limit
-        }
+        collection = client_weaviate.collections.get("SimplifiedChunk")
         if document_id:
-            query["where"] = {
-                "path": ["document_id"],
-                "operator": "Equal",
-                "valueText": document_id
-            }
-        result = client_weaviate.collections.get("SimplifiedChunk").query.hybrid(**query)
+            from weaviate.classes.query import Filter
+            where_filter = Filter.by_property("document_id").equal(document_id)
+            result = collection.query.hybrid(
+                query=topic,
+                alpha=0.3,
+                limit=limit,
+                where=where_filter
+            )
+        else:
+            result = collection.query.hybrid(
+                query=topic,
+                alpha=0.3,
+                limit=limit
+            )
         logger.info(f"[DEBUG] Weaviate query executed. Raw result: {result}")
-        
         chunks = []
         for item in result.objects:
             chunks.append({
@@ -153,7 +151,6 @@ def hybrid_search_for_topic(topic: str, document_id: str = None, limit: int = 5)
             })
         logger.info(f"[DEBUG] Found {len(chunks)} chunks for topic: {topic}")
         return chunks
-        
     except Exception as e:
         logger.error(f"[DEBUG] Search error for topic '{topic}': {e}")
         logger.error(f"[DEBUG] Error type: {type(e)}")
@@ -283,47 +280,60 @@ async def search_workflow(request: SearchRequest):
         )
 
         # --- Update Weaviate details collection ---
-        WEAVIATE_URL = os.getenv("WEAVIATE_URL")
-        WEAVIATE_API_KEY = os.getenv("WEAVIATE_API_KEY")
-        OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
         w_client = get_weaviate_client()
         details_collection_name = f"Assistant_Detail_{request.assistant_id}"
         # Create collection if it doesn't exist
         if not w_client.collections.exists(details_collection_name):
-            from weaviate.classes.config import Configure
+            from weaviate.classes.config import Property, DataType, Configure
             w_client.collections.create(
                 name=details_collection_name,
                 vectorizer_config=Configure.Vectorizer.text2vec_openai(),
                 properties=[
-                    Configure.Property(name="assistantId", data_type=Configure.DataType.TEXT, description="The mongoDB assistantId", skip_vectorization=True),
-                    Configure.Property(name="groupId", data_type=Configure.DataType.TEXT, description="The mongoDB Group", skip_vectorization=True),
-                    Configure.Property(name="groupLabel", data_type=Configure.DataType.TEXT, description="label of the group", skip_vectorization=True),
-                    Configure.Property(name="detailId", data_type=Configure.DataType.TEXT, description="objectId of the detail", skip_vectorization=True),
-                    Configure.Property(name="detailLabel", data_type=Configure.DataType.TEXT, description="Label of the detail", skip_vectorization=True),
-                    Configure.Property(name="detailValue", data_type=Configure.DataType.TEXT, description="Value of the Detail", skip_vectorization=True),
+                    Property(name="assistantId", data_type=DataType.TEXT, description="The mongoDB assistantId", skip_vectorization=True),
+                    Property(name="groupId", data_type=DataType.TEXT, description="The mongoDB Group", skip_vectorization=True),
+                    Property(name="groupLabel", data_type=DataType.TEXT, description="label of the group", skip_vectorization=True),
+                    Property(name="detailId", data_type=DataType.TEXT, description="objectId of the detail", skip_vectorization=True),
+                    Property(name="detailLabel", data_type=DataType.TEXT, description="Label of the detail", skip_vectorization=True),
+                    Property(name="detailValue", data_type=DataType.TEXT, description="Value of the Detail", skip_vectorization=True),
                 ]
             )
         # Remove all previous details for this assistant (optional: for full sync)
-        w_client.collections.get(details_collection_name).objects.delete_many(
-            where={
-                "path": ["assistantId"],
-                "operator": "Equal",
-                "valueText": str(request.assistant_id)
-            }
+        collection = w_client.collections.get(details_collection_name)
+        from weaviate.classes.query import Filter
+        collection.data.delete_many(
+            where=Filter.by_property("assistantId").equal(str(request.assistant_id))
         )
         # Insert new details
-        for group in details:
-            for item in group["data"]:
-                w_client.collections.get(details_collection_name).objects.create(
-                    properties={
-                        "assistantId": str(request.assistant_id),
-                        "groupId": group["_id"],
-                        "groupLabel": group["label"],
-                        "detailId": item["_id"],
-                        "detailLabel": item["label"],
-                        "detailValue": str(item["value"]),
-                    }
-                )
+        try:
+            for group in details:
+                for item in group["data"]:
+                    # Generate embedding for the detail value (required)
+                    embedding_response = client.embeddings.create(
+                        model="text-embedding-3-small",
+                        input=[str(item["value"])]
+                    )
+                    embedding = embedding_response.data[0].embedding
+                    try:
+                        collection.data.insert(
+                            properties={
+                                "assistantId": str(request.assistant_id),
+                                "groupId": group["_id"],
+                                "groupLabel": group["label"],
+                                "detailId": item["_id"],
+                                "detailLabel": item["label"],
+                                "detailValue": str(item["value"]),
+                            },
+                            vector=embedding
+                        )
+                    except Exception as insert_err:
+                        import traceback
+                        logger.error(f"Failed to insert detail into Weaviate: {insert_err}\nTraceback: {traceback.format_exc()}")
+            w_client.close()
+        except Exception as e:
+            import traceback
+            logger.error(f"Exception during Weaviate detail insertion: {e}\nTraceback: {traceback.format_exc()}")
+            raise e
+
         return JSONResponse({
             "instruction": request.instruction,
             "document_id": request.document_id,
@@ -336,5 +346,6 @@ async def search_workflow(request: SearchRequest):
             }
         })
     except Exception as e:
-        logger.error(f"Search workflow error: {e}")
+        import traceback
+        logger.error(f"Search workflow error: {e}\nTraceback: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"Search workflow failed: {str(e)}")

@@ -111,7 +111,7 @@ def embed_text_with_openai(text):
 def ensure_simplifiedchunk_collection(client):
     try:
         if not client.collections.exists("SimplifiedChunk"):
-            from weaviate.classes.config import Configure
+            from weaviate.classes.config import Property, DataType, Configure
             client.collections.create(
                 name="SimplifiedChunk",
                 description="Simple chunks of PDF text with basic embeddings.",
@@ -119,10 +119,10 @@ def ensure_simplifiedchunk_collection(client):
                     model="text-embedding-3-small"
                 ),
                 properties=[
-                    Configure.Property(name="content", data_type=Configure.DataType.TEXT, description="The original text content"),
-                    Configure.Property(name="source", data_type=Configure.DataType.TEXT, description="Source filename"),
-                    Configure.Property(name="chunk_index", data_type=Configure.DataType.INT, description="Index of this chunk within the document"),
-                    Configure.Property(name="document_id", data_type=Configure.DataType.TEXT, description="Unique identifier for the source document")
+                    Property(name="content", data_type=DataType.TEXT, description="The original text content"),
+                    Property(name="source", data_type=DataType.TEXT, description="Source filename"),
+                    Property(name="chunk_index", data_type=DataType.INT, description="Index of this chunk within the document"),
+                    Property(name="document_id", data_type=DataType.TEXT, description="Unique identifier for the source document")
                 ]
             )
             logger.info("Created collection: SimplifiedChunk")
@@ -132,8 +132,7 @@ def ensure_simplifiedchunk_collection(client):
         logger.error(f"Error ensuring SimplifiedChunk collection: {e}")
 
 
-def store_chunk_in_weaviate(chunk_data, filename, chunk_index, document_id):
-    client = get_weaviate_client()
+def store_chunk_in_weaviate(client, chunk_data, filename, chunk_index, document_id):
     print(f"Connecting to Weaviate....", client.is_ready())
     try:
         ensure_simplifiedchunk_collection(client)
@@ -144,7 +143,7 @@ def store_chunk_in_weaviate(chunk_data, filename, chunk_index, document_id):
             "document_id": document_id
         }
         try:
-            client.collections.get("SimplifiedChunk").objects.create(
+            client.collections.get("SimplifiedChunk").data.insert(
                 properties=properties,
                 vector=chunk_data["embedding"]
             )
@@ -323,17 +322,17 @@ async def upload_assistant(
     assistant_id = str(assistant_doc.get("_id", ""))
     details_collection_name = f"Assistant_Detail_{assistant_id}"
     if not w_client.collections.exists(details_collection_name):
-        from weaviate.classes.config import Configure
+        from weaviate.classes.config import Property, DataType, Configure
         w_client.collections.create(
             name=details_collection_name,
             vectorizer_config=Configure.Vectorizer.text2vec_openai(),
             properties=[
-                Configure.Property(name="assistantId", data_type=Configure.DataType.TEXT, description="The mongoDB assistantId", skip_vectorization=True),
-                Configure.Property(name="groupId", data_type=Configure.DataType.TEXT, description="The mongoDB Group", skip_vectorization=True),
-                Configure.Property(name="groupLabel", data_type=Configure.DataType.TEXT, description="label of the group", skip_vectorization=True),
-                Configure.Property(name="detailId", data_type=Configure.DataType.TEXT, description="objectId of the detail", skip_vectorization=True),
-                Configure.Property(name="detailLabel", data_type=Configure.DataType.TEXT, description="Label of the detail", skip_vectorization=True),
-                Configure.Property(name="detailValue", data_type=Configure.DataType.TEXT, description="Value of the Detail", skip_vectorization=True),
+                Property(name="assistantId", data_type=DataType.TEXT, description="The mongoDB assistantId", skip_vectorization=True),
+                Property(name="groupId", data_type=DataType.TEXT, description="The mongoDB Group", skip_vectorization=True),
+                Property(name="groupLabel", data_type=DataType.TEXT, description="label of the group", skip_vectorization=True),
+                Property(name="detailId", data_type=DataType.TEXT, description="objectId of the detail", skip_vectorization=True),
+                Property(name="detailLabel", data_type=DataType.TEXT, description="Label of the detail", skip_vectorization=True),
+                Property(name="detailValue", data_type=DataType.TEXT, description="Value of the Detail", skip_vectorization=True),
             ]
         )
     # Generate embeddings and store chunks
@@ -346,7 +345,7 @@ async def upload_assistant(
                 "text": chunk,
                 "embedding": embedding
             }
-            result = store_chunk_in_weaviate(chunk_data, pdf.filename, i, document_id)
+            result = store_chunk_in_weaviate(w_client, chunk_data, pdf.filename, i, document_id)
             if result is True:
                 num_uploaded += 1
                 logger.info(f"Stored chunk {i+1} in Weaviate")
@@ -356,6 +355,10 @@ async def upload_assistant(
             error_msg = f"Error processing chunk {i+1}: {str(e)}"
             logger.error(error_msg)
             upload_errors.append(error_msg)
+    try:
+        w_client.close()
+    except Exception as e:
+        logger.warning(f"Error closing Weaviate client: {e}")
     return JSONResponse(
         {
             "message": "Completed simplified upload processing.",
