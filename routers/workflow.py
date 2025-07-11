@@ -306,15 +306,26 @@ async def search_workflow(request: SearchRequest):
         # --- ENFORCE GROUPED STRUCTURE ---
         details = []
         for topic, value in final_result.items():
+            # If value is a dict and all values are strings, treat as a group with multiple details
             if isinstance(value, dict):
                 group_data = []
                 for sub_label, sub_value in value.items():
-                    group_data.append({
-                        "label": sub_label,
-                        "selectType": "Text",
-                        "value": str(sub_value),
-                        "_id": str(ObjectId())
-                    })
+                    if isinstance(sub_value, dict):
+                        # If sub_value is a dict, flatten it as well
+                        for inner_label, inner_value in sub_value.items():
+                            group_data.append({
+                                "label": inner_label,
+                                "selectType": "Text",
+                                "value": str(inner_value),
+                                "_id": str(ObjectId())
+                            })
+                    else:
+                        group_data.append({
+                            "label": sub_label,
+                            "selectType": "Text",
+                            "value": str(sub_value),
+                            "_id": str(ObjectId())
+                        })
                 details.append({
                     "label": topic,
                     "data": group_data,
