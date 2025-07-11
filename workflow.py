@@ -111,7 +111,7 @@ Your response (JSON array only):"""
         return topics if topics else ["general information"]
 
 
-def hybrid_search_for_topic(topic: str, document_id: str = None, limit: int = 5) -> List[Dict]:
+def hybrid_search_for_topic(topic: str, document_id: str = None, limit: int = 25) -> List[Dict]:
     """
     Perform hybrid search for a specific topic using text-embedding-3-small
     """

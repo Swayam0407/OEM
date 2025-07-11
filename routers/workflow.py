@@ -116,7 +116,7 @@ Your response (JSON array only):"""
         return topics if topics else ["general information"]
 
 
-def hybrid_search_for_topic(topic: str, document_id: str = None, limit: int = 5) -> List[Dict]:
+def hybrid_search_for_topic(topic: str, document_id: str = None, limit: int = 25) -> List[Dict]:
     """
     Perform hybrid search for a specific topic using text-embedding-3-small
     """
@@ -303,20 +303,36 @@ async def search_workflow(request: SearchRequest):
         logger.info("OpenAI summarization complete")
         # Step 4: Update assistant details in MongoDB
         assistants_collection = get_assistants_collection()
-        details = [
-            {
-                "label": topic,
-                "data": [
-                    {
-                        "label": topic,
-                        "value": value,
+        # --- ENFORCE GROUPED STRUCTURE ---
+        details = []
+        for topic, value in final_result.items():
+            if isinstance(value, dict):
+                group_data = []
+                for sub_label, sub_value in value.items():
+                    group_data.append({
+                        "label": sub_label,
+                        "selectType": "Text",
+                        "value": str(sub_value),
                         "_id": str(ObjectId())
-                    }
-                ],
-                "_id": str(ObjectId())
-            }
-            for topic, value in final_result.items()
-        ]
+                    })
+                details.append({
+                    "label": topic,
+                    "data": group_data,
+                    "_id": str(ObjectId())
+                })
+            else:
+                details.append({
+                    "label": topic,
+                    "data": [
+                        {
+                            "label": topic,
+                            "selectType": "Text",
+                            "value": str(value),
+                            "_id": str(ObjectId())
+                        }
+                    ],
+                    "_id": str(ObjectId())
+                })
         await assistants_collection.update_one(
             {"_id": ObjectId(request.assistant_id)},
             {"$set": {"details": details}}
@@ -339,21 +355,24 @@ async def search_workflow(request: SearchRequest):
                         Property(name="groupLabel", data_type=DataType.TEXT, description="label of the group", skip_vectorization=True),
                         Property(name="detailId", data_type=DataType.TEXT, description="objectId of the detail", skip_vectorization=True),
                         Property(name="detailLabel", data_type=DataType.TEXT, description="Label of the detail", skip_vectorization=True),
+                        Property(name="selectType", data_type=DataType.TEXT, description="Type of the detail", skip_vectorization=True),
                         Property(name="detailValue", data_type=DataType.TEXT, description="Value of the Detail", skip_vectorization=True),
                     ]
                 )
             # Remove all previous details for this assistant (optional: for full sync)
+            from weaviate.classes.query import Filter
             collection = w_client.collections.get(details_collection_name)
             collection.data.delete_many(
-                where={
-                    "path": ["assistantId"],
-                    "operator": "Equal",
-                    "valueText": str(request.assistant_id)
-                }
+                where=Filter.by_property("assistantId").equal(str(request.assistant_id))
             )
-            # Insert new details
+            # Insert new details into Weaviate
             for group in details:
                 for item in group["data"]:
+                    embedding_response = client.embeddings.create(
+                        model="text-embedding-3-small",
+                        input=[str(item["value"])]
+                    )
+                    embedding = embedding_response.data[0].embedding
                     collection.data.insert(
                         properties={
                             "assistantId": str(request.assistant_id),
@@ -361,18 +380,17 @@ async def search_workflow(request: SearchRequest):
                             "groupLabel": group["label"],
                             "detailId": item["_id"],
                             "detailLabel": item["label"],
+                            "selectType": item["selectType"],
                             "detailValue": str(item["value"]),
-                        }
+                        },
+                        vector=embedding
                     )
+            w_client.close()
         except Exception as e:
-            logger.error(f"Failed to update Weaviate details: {e}")
-            # Continue without failing the entire request
-        finally:
-            if w_client:
-                try:
-                    w_client.close()
-                except:
-                    pass
+            import traceback
+            logger.error(f"Exception during Weaviate detail insertion: {e}\nTraceback: {traceback.format_exc()}")
+            raise e
+
         return JSONResponse({
             "instruction": request.instruction,
             "document_id": document_id_to_search,
