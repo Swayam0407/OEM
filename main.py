@@ -9,8 +9,12 @@ load_dotenv(dotenv_path=env_path)
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import workflow, upload_assistant
+try:
+    from OEM.routers import oem_config, session_state  # When run as package (e.g., uvicorn OEM.main:app)
+except ModuleNotFoundError:
+    from routers import oem_config, session_state  # When run inside the OEM directory (e.g., uvicorn main:app)
 
-app = FastAPI(title="AI Workflow Builder", version="0.1.0")
+app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
@@ -22,6 +26,8 @@ app.add_middleware(
 
 app.include_router(workflow.router, prefix="/api")
 app.include_router(upload_assistant.router)
+app.include_router(oem_config.router)
+app.include_router(session_state.router)
 
 
 @app.get("/")
