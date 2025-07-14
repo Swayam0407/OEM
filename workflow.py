@@ -44,7 +44,7 @@ logger = logging.getLogger(__name__)
 class SearchRequest(BaseModel):
     instruction: str
     document_id: Optional[str] = None  # Optional: search specific document
-    assistant_id: str  # Now required
+    product_id: str  # Identifier for the product
 
 
 def extract_topics_from_instruction(instruction: str) -> List[str]:
@@ -275,13 +275,13 @@ async def search_workflow(request: SearchRequest):
             for topic, value in final_result.items()
         ]
         await assistants_collection.update_one(
-            {"_id": ObjectId(request.assistant_id)},
+            {"product_id": request.product_id},
             {"$set": {"details": details}}
         )
 
         # --- Update Weaviate details collection ---
         w_client = get_weaviate_client()
-        details_collection_name = f"Assistant_Detail_{request.assistant_id}"
+        details_collection_name = f"Product_Detail_{request.product_id}"
         # Create collection if it doesn't exist
         if not w_client.collections.exists(details_collection_name):
             from weaviate.classes.config import Property, DataType, Configure
@@ -289,7 +289,7 @@ async def search_workflow(request: SearchRequest):
                 name=details_collection_name,
                 vectorizer_config=Configure.Vectorizer.text2vec_openai(),
                 properties=[
-                    Property(name="assistantId", data_type=DataType.TEXT, description="The mongoDB assistantId", skip_vectorization=True),
+                    Property(name="product_id", data_type=DataType.TEXT, description="The product identifier", skip_vectorization=True),
                     Property(name="groupId", data_type=DataType.TEXT, description="The mongoDB Group", skip_vectorization=True),
                     Property(name="groupLabel", data_type=DataType.TEXT, description="label of the group", skip_vectorization=True),
                     Property(name="detailId", data_type=DataType.TEXT, description="objectId of the detail", skip_vectorization=True),
@@ -301,7 +301,7 @@ async def search_workflow(request: SearchRequest):
         collection = w_client.collections.get(details_collection_name)
         from weaviate.classes.query import Filter
         collection.data.delete_many(
-            where=Filter.by_property("assistantId").equal(str(request.assistant_id))
+            where=Filter.by_property("product_id").equal(str(request.product_id))
         )
         # Insert new details
         try:
@@ -316,7 +316,7 @@ async def search_workflow(request: SearchRequest):
                     try:
                         collection.data.insert(
                             properties={
-                                "assistantId": str(request.assistant_id),
+                                "product_id": str(request.product_id),
                                 "groupId": group["_id"],
                                 "groupLabel": group["label"],
                                 "detailId": item["_id"],
@@ -337,7 +337,7 @@ async def search_workflow(request: SearchRequest):
         return JSONResponse({
             "instruction": request.instruction,
             "document_id": request.document_id,
-            "assistant_id": request.assistant_id,
+            "product_id": request.product_id,
             "extracted_topics": topics,
             "results": final_result,
             "metadata": {

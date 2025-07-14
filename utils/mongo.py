@@ -20,7 +20,7 @@ class EscalationPolicyModel(BaseModel):
     threshold_fail_steps: int
 
 class OEMConfigModel(BaseModel):
-    product_model: str
+    product_id: str
     oem: str
     ask_flow: List[AskFlowItemModel]
     escalation_policy: EscalationPolicyModel
@@ -28,12 +28,7 @@ class OEMConfigModel(BaseModel):
     voice_tone: Literal["friendly", "formal"]
     language: str
 
-class SessionStateModel(BaseModel):
-    session_id: str
-    user_id: Optional[str] = None
-    product_model: str
-    step_count: int
-    fields_collected: Dict[str, str]  # e.g., { 'serial_number': '1234', 'location': '' }
+
 
 class RAGChunkModel(BaseModel):
     product_model: str
@@ -58,8 +53,7 @@ def get_database():
 def get_oem_configs_collection():
     return db["oem_configs"]
 
-def get_session_states_collection():
-    return db["session_states"]
+
 
 def get_rag_chunks_collection():
     return db["rag_chunks"]

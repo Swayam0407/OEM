@@ -10,9 +10,9 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import workflow, upload_assistant
 try:
-    from OEM.routers import oem_config, session_state  # When run as package (e.g., uvicorn OEM.main:app)
+    from OEM.routers import oem_config, customer_support, ticket  # When run as package (e.g., uvicorn OEM.main:app)
 except ModuleNotFoundError:
-    from routers import oem_config, session_state  # When run inside the OEM directory (e.g., uvicorn main:app)
+    from routers import oem_config, customer_support, ticket  # When run inside the OEM directory (e.g., uvicorn main:app)
 
 app = FastAPI()
 
@@ -24,10 +24,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
 app.include_router(workflow.router, prefix="/api")
 app.include_router(upload_assistant.router)
 app.include_router(oem_config.router)
-app.include_router(session_state.router)
+app.include_router(customer_support.router)
+app.include_router(ticket.router)
 
 
 @app.get("/")

@@ -1,6 +1,9 @@
 import os
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException
 from fastapi.responses import JSONResponse
+from fastapi import Body, Query
+import re
+from typing import Optional, List, Dict, Any
 import fitz  # PyMuPDF
 from tempfile import SpooledTemporaryFile
 from pdf2image import convert_from_bytes
@@ -18,9 +21,9 @@ import json
 # Define assistantDetailSchemaProperties inline (Python version)
 assistantDetailSchemaProperties = [
     {
-        "name": "assistantId",
+        "name": "product_id",
         "dataType": ["text"],
-        "description": "The mongoDB assistantId",
+        "description": "The product_id",
         "moduleConfig": {"text2vec-openai": {"skip": True}},
     },
     {
@@ -127,7 +130,8 @@ def ensure_simplifiedchunk_collection(client):
                     Property(name="content", data_type=DataType.TEXT, description="The original text content"),
                     Property(name="source", data_type=DataType.TEXT, description="Source filename"),
                     Property(name="chunk_index", data_type=DataType.INT, description="Index of this chunk within the document"),
-                    Property(name="document_id", data_type=DataType.TEXT, description="Unique identifier for the source document")
+                    Property(name="document_id", data_type=DataType.TEXT, description="Unique identifier for the source document"),
+                    Property(name="product_id", data_type=DataType.TEXT, description="Product identifier", skip_vectorization=True)
                 ]
             )
             logger.info("Created collection: SimplifiedChunk")
@@ -137,7 +141,7 @@ def ensure_simplifiedchunk_collection(client):
         logger.error(f"Error ensuring SimplifiedChunk collection: {e}")
 
 
-def store_chunk_in_weaviate(chunk_data, filename, chunk_index, document_id):
+def store_chunk_in_weaviate(chunk_data, filename, chunk_index, document_id, product_id):
     try:
         client = get_weaviate_client()
         print(f"Connecting to Weaviate....", client.is_ready())
@@ -147,7 +151,8 @@ def store_chunk_in_weaviate(chunk_data, filename, chunk_index, document_id):
                 "content": chunk_data["text"],
                 "source": filename,
                 "chunk_index": chunk_index,
-                "document_id": document_id
+                "document_id": document_id,
+                "product_id": product_id
             }
             try:
                 collection = client.collections.get("SimplifiedChunk")
@@ -211,16 +216,17 @@ class AssistantCarouselImage(BaseModel):
     title: str
 
 class AssistantModel(BaseModel):
+    product_id: str
     name: str
     about: str
     voice: str = "alloy"
     avatar: str = "/images/defaultAssistantAvatar.jpg"
     isPublic: bool = False
-    prompts: List[AssistantPrompt] = []
-    links: List[AssistantLinkGroup] = []
-    details: List[AssistantDetailGroup] = []
-    userForm: AssistantUserForm = AssistantUserForm()
-    carouselImages: List[AssistantCarouselImage] = []
+    prompts: list = []
+    links: list = []
+    details: list = []
+    userForm: dict = {}
+    carouselImages: list = []
     createdAt: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updatedAt: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
@@ -243,11 +249,25 @@ def parse_user_form(field):
         return {"status": False, "recaptcha": False, "data": []}
 
 
-@router.post("/api/uploadAssistant")
+
+def validate_product_id(product_id: str) -> bool:
+    # Only allow lowercase letters, numbers, underscores, and hyphens
+    pattern = re.compile(r'^[a-z0-9_-]+$')
+    return bool(pattern.match(product_id))
+
+
+@router.post(
+    "/api/uploadAssistant", 
+    description="Upload a new assistant with product documentation",
+    response_description="Returns the uploaded assistant details and processing status",
+    response_model=dict,
+    status_code=200,
+)
 async def upload_assistant(
-    pdf: UploadFile = File(...),
-    name: str = Form(...),
-    about: str = Form(...),
+    pdf: UploadFile = File(..., description="PDF file containing product documentation"),
+    product_id: str = Form(..., description="Unique identifier for the product (e.g., samsung_eco_7kg)"),
+    name: str = Form(..., description="Name of the assistant"),
+    about: str = Form(..., description="Description of the assistant"),
     voice: Optional[str] = Form(None),
     avatar: Optional[str] = Form(None),
     isPublic: Optional[str] = Form(None),
@@ -257,7 +277,13 @@ async def upload_assistant(
     userForm: Optional[str] = Form(None),
     carouselImages: Optional[str] = Form(None),
 ):
-    logger.info(f"Received upload: {pdf.filename}, name: {name}, about: {about}, voice: {voice}, isPublic: {isPublic}")
+    logger.info(f"Received upload: {pdf.filename}, name: {name}, about: {about}, voice: {voice}, isPublic: {isPublic}, product_id: {product_id}")
+    # Validate product_id
+    if not product_id:
+        raise HTTPException(status_code=400, detail="product_id is required")
+    if not validate_product_id(product_id):
+        raise HTTPException(status_code=400, detail="Invalid product_id format. Use only lowercase letters, numbers, underscores, and hyphens")
+
     # Parse booleans and JSON fields
     is_public = (isPublic.lower() == "true") if isPublic else False
     prompts_val = parse_json_field(prompts, [])
@@ -295,6 +321,7 @@ async def upload_assistant(
     assistants_collection = get_assistants_collection()
     # Build the assistant document using the model
     assistant_doc = AssistantModel(
+        product_id=product_id,
         name=name,
         about=about,
         voice=voice or "alloy",
@@ -315,8 +342,7 @@ async def upload_assistant(
     resources_collection = get_resources_collection()
     file_extension = os.path.splitext(pdf.filename)[1][1:] if '.' in pdf.filename else ''
     resource_doc = {
-        "assistantId": str(assistant_doc.get("_id", "")),
-        # "organizationId": <add if available>,
+        "product_id": product_id,  # Primary identifier
         "title": pdf.filename,
         "url": f"/uploads/{pdf.filename}",  # Adjust if using S3 or other storage
         "size": len(content),
@@ -333,15 +359,14 @@ async def upload_assistant(
     # --- Create empty Weaviate details collection for this assistant ---
     try:
         w_client = get_weaviate_client()
-        assistant_id = str(assistant_doc.get("_id", ""))
-        details_collection_name = f"Assistant_Detail_{assistant_id}"
+        details_collection_name = f"Product_Detail_{product_id}"
         if not w_client.collections.exists(details_collection_name):
             from weaviate.classes.config import Configure, Property, DataType
             w_client.collections.create(
                 name=details_collection_name,
                 vectorizer_config=Configure.Vectorizer.text2vec_openai(),
                 properties=[
-                    Property(name="assistantId", data_type=DataType.TEXT, description="The mongoDB assistantId", skip_vectorization=True),
+                    Property(name="product_id", data_type=DataType.TEXT, description="The product_id", skip_vectorization=True),
                     Property(name="groupId", data_type=DataType.TEXT, description="The mongoDB Group", skip_vectorization=True),
                     Property(name="groupLabel", data_type=DataType.TEXT, description="label of the group", skip_vectorization=True),
                     Property(name="detailId", data_type=DataType.TEXT, description="objectId of the detail", skip_vectorization=True),
@@ -363,7 +388,7 @@ async def upload_assistant(
                 "text": chunk,
                 "embedding": embedding
             }
-            result = store_chunk_in_weaviate(chunk_data, pdf.filename, i, document_id)
+            result = store_chunk_in_weaviate(chunk_data, pdf.filename, i, document_id, product_id)
             if result is True:
                 num_uploaded += 1
                 logger.info(f"Stored chunk {i+1} in Weaviate")

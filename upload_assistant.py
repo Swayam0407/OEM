@@ -319,8 +319,8 @@ async def upload_assistant(
 
     # --- Create empty Weaviate details collection for this assistant ---
     w_client = get_weaviate_client()
-    assistant_id = str(assistant_doc.get("_id", ""))
-    details_collection_name = f"Assistant_Detail_{assistant_id}"
+    product_id = str(assistant_doc.get("product_id", ""))
+    details_collection_name = f"Product_Detail_{product_id}"
     if not w_client.collections.exists(details_collection_name):
         from weaviate.classes.config import Property, DataType, Configure
         w_client.collections.create(

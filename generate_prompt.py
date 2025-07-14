@@ -15,7 +15,7 @@ class EscalationPolicy:
 
 @dataclass
 class OEMConfig:
-    product_model: str
+    product_id: str
     oem: str
     ask_flow: List[AskFlowItem]
     escalation_policy: EscalationPolicy
@@ -47,7 +47,7 @@ def format_oem_config(oem_config: OEMConfig) -> str:
     escalation_line = f"- Escalate after {oem_config.escalation_policy.threshold_fail_steps} failed suggestions"
     tone_line = f"- Speak in {oem_config.voice_tone} tone ({oem_config.language})"
     lines = [
-        f"OEM: {oem_config.oem} | Product: {oem_config.product_model}",
+        f"OEM: {oem_config.oem} | Product ID: {oem_config.product_id}",
         *ask_flow_lines,
         tools_line,
         escalation_line,
@@ -98,7 +98,7 @@ def generate_prompt(
 """
 if __name__ == "__main__":
     oem_config = OEMConfig(
-        product_model="EcoBubble 7kg",
+        product_id="samsung_eco_7kg",
         oem="Samsung",
         ask_flow=[
             AskFlowItem(field="serial_number", priority="high", preferred_stage="after_troubleshooting", reason="Needed for support ticket"),

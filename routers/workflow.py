@@ -48,8 +48,8 @@ logger = logging.getLogger(__name__)
 
 class SearchRequest(BaseModel):
     instruction: str
+    product_id: str
     document_id: Optional[str] = None  # Optional: search specific document
-    assistant_id: str  # Now required
 
 
 def extract_topics_from_instruction(instruction: str) -> List[str]:
@@ -267,31 +267,25 @@ async def search_workflow(request: SearchRequest):
         logger.info(f"Extracted topics: {topics}")
         if not topics:
             raise HTTPException(status_code=400, detail="Could not extract topics from instruction")
-        # Step 2: Find document_id associated with this assistant if not provided
+        # Step 2: Find document_id associated with this product if not provided
         document_id_to_search = request.document_id
-        
-        # Always try to find the proper document_id from the assistant's resources
+        # Always try to find the proper document_id from the product's resources
         try:
-            from utils.mongo import get_resources_collection
+            from utils.mongo import get_resources_collection, get_assistants_collection
             resources_collection = get_resources_collection()
-            resource = await resources_collection.find_one({"assistantId": request.assistant_id})
+            resource = await resources_collection.find_one({"product_id": request.product_id})
             if resource:
-                # Reconstruct the document_id used during upload
                 filename = resource.get("title", "")
-                # Get assistant name to reconstruct the hash
-                assistant = await assistants_collection.find_one({"_id": ObjectId(request.assistant_id)})
+                assistant = await get_assistants_collection().find_one({"product_id": request.product_id})
                 if assistant:
                     assistant_name = assistant.get("name", "")
                     reconstructed_document_id = f"{filename}_{hash(assistant_name)}"
-                    logger.info(f"Reconstructed document_id for assistant: {reconstructed_document_id}")
-                    # Use the reconstructed document_id instead of the provided one
+                    logger.info(f"Reconstructed document_id for product: {reconstructed_document_id}")
                     document_id_to_search = reconstructed_document_id
         except Exception as e:
-            logger.warning(f"Could not find document_id for assistant: {e}")
-            # If we can't reconstruct, use the provided document_id (might be wrong format)
+            logger.warning(f"Could not find document_id for product: {e}")
             if not document_id_to_search:
                 logger.warning("No document_id provided and could not reconstruct - searching all documents")
-        
         # Step 2: Hybrid search for each topic
         topics_with_chunks = {}
         for topic in topics:
@@ -303,15 +297,12 @@ async def search_workflow(request: SearchRequest):
         logger.info("OpenAI summarization complete")
         # Step 4: Update assistant details in MongoDB
         assistants_collection = get_assistants_collection()
-        # --- ENFORCE GROUPED STRUCTURE ---
         details = []
         for topic, value in final_result.items():
-            # If value is a dict and all values are strings, treat as a group with multiple details
             if isinstance(value, dict):
                 group_data = []
                 for sub_label, sub_value in value.items():
                     if isinstance(sub_value, dict):
-                        # If sub_value is a dict, flatten it as well
                         for inner_label, inner_value in sub_value.items():
                             group_data.append({
                                 "label": inner_label,
@@ -345,23 +336,21 @@ async def search_workflow(request: SearchRequest):
                     "_id": str(ObjectId())
                 })
         await assistants_collection.update_one(
-            {"_id": ObjectId(request.assistant_id)},
+            {"product_id": request.product_id},
             {"$set": {"details": details}}
         )
-
         # --- Update Weaviate details collection ---
         w_client = None
         try:
             w_client = get_weaviate_client()
-            details_collection_name = f"Assistant_Detail_{request.assistant_id}"
-            # Create collection if it doesn't exist
+            details_collection_name = f"Product_Detail_{request.product_id}"
             if not w_client.collections.exists(details_collection_name):
                 from weaviate.classes.config import Configure, Property, DataType
                 w_client.collections.create(
                     name=details_collection_name,
                     vectorizer_config=Configure.Vectorizer.text2vec_openai(),
                     properties=[
-                        Property(name="assistantId", data_type=DataType.TEXT, description="The mongoDB assistantId", skip_vectorization=True),
+                        Property(name="product_id", data_type=DataType.TEXT, description="The product_id", skip_vectorization=True),
                         Property(name="groupId", data_type=DataType.TEXT, description="The mongoDB Group", skip_vectorization=True),
                         Property(name="groupLabel", data_type=DataType.TEXT, description="label of the group", skip_vectorization=True),
                         Property(name="detailId", data_type=DataType.TEXT, description="objectId of the detail", skip_vectorization=True),
@@ -370,13 +359,11 @@ async def search_workflow(request: SearchRequest):
                         Property(name="detailValue", data_type=DataType.TEXT, description="Value of the Detail", skip_vectorization=True),
                     ]
                 )
-            # Remove all previous details for this assistant (optional: for full sync)
             from weaviate.classes.query import Filter
             collection = w_client.collections.get(details_collection_name)
             collection.data.delete_many(
-                where=Filter.by_property("assistantId").equal(str(request.assistant_id))
+                where=Filter.by_property("product_id").equal(str(request.product_id))
             )
-            # Insert new details into Weaviate
             for group in details:
                 for item in group["data"]:
                     embedding_response = client.embeddings.create(
@@ -386,7 +373,7 @@ async def search_workflow(request: SearchRequest):
                     embedding = embedding_response.data[0].embedding
                     collection.data.insert(
                         properties={
-                            "assistantId": str(request.assistant_id),
+                            "product_id": str(request.product_id),
                             "groupId": group["_id"],
                             "groupLabel": group["label"],
                             "detailId": item["_id"],
@@ -401,11 +388,10 @@ async def search_workflow(request: SearchRequest):
             import traceback
             logger.error(f"Exception during Weaviate detail insertion: {e}\nTraceback: {traceback.format_exc()}")
             raise e
-
         return JSONResponse({
             "instruction": request.instruction,
             "document_id": document_id_to_search,
-            "assistant_id": request.assistant_id,
+            "product_id": request.product_id,
             "extracted_topics": topics,
             "results": final_result,
             "metadata": {
